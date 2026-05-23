@@ -1,0 +1,416 @@
+From 69e6cb6593861f4c1c87dbea499fd0838f7522c5 Mon Sep 17 00:00:00 2001
+From: Joseph <jgoyer3@gmail.com>
+Date: Wed, 24 Dec 2025 13:35:19 -0500
+Subject: [PATCH 1/4] add preserve_alpha flag to viewports
+
+---
+ doc/classes/Viewport.xml                      |  4 ++++
+ drivers/gles3/storage/texture_storage.cpp     | 22 ++++++++++++++++++
+ drivers/gles3/storage/texture_storage.h       |  3 +++
+ scene/main/viewport.cpp                       | 14 +++++++++++
+ scene/main/viewport.h                         |  4 ++++
+ .../rendering/dummy/storage/texture_storage.h |  2 ++
+ .../storage_rd/texture_storage.cpp            | 23 +++++++++++++++++--
+ .../renderer_rd/storage_rd/texture_storage.h  |  3 +++
+ servers/rendering/renderer_viewport.cpp       | 19 +++++++++++++++
+ servers/rendering/renderer_viewport.h         |  5 +++-
+ servers/rendering/rendering_server.cpp        |  1 +
+ servers/rendering/rendering_server.h          |  2 ++
+ servers/rendering/rendering_server_default.h  |  2 ++
+ servers/rendering/storage/texture_storage.h   |  2 ++
+ 14 files changed, 103 insertions(+), 3 deletions(-)
+
+diff --git a/doc/classes/Viewport.xml b/doc/classes/Viewport.xml
+index e2449515373a..6f77bbdf8aa7 100644
+--- a/doc/classes/Viewport.xml
++++ b/doc/classes/Viewport.xml
+@@ -469,6 +469,10 @@
+ 			If [code]true[/code], 2D rendering will use a high dynamic range (HDR) [code]RGBA16[/code] format framebuffer. Additionally, 2D rendering will be performed on linear values and will be converted using the appropriate transfer function immediately before blitting to the screen (if the Viewport is attached to the screen).
+ 			Practically speaking, this means that the end result of the Viewport will not be clamped to the [code]0-1[/code] range and can be used in 3D rendering without color encoding adjustments. This allows 2D rendering to take advantage of effects requiring high dynamic range (e.g. 2D glow) as well as substantially improves the appearance of effects requiring highly detailed gradients.
+ 		</member>
++		<member name="preserve_alpha" type="bool" setter="set_preserve_alpha" getter="get_preserve_alpha" default="false">
++			If [code]true[/code], the alpha channel will be preserved when passed into shaders.
++			[b]Note:[/b] Setting this to [code]true[/code] may break behavior.
++		</member>
+ 		<member name="use_occlusion_culling" type="bool" setter="set_use_occlusion_culling" getter="is_using_occlusion_culling" default="false">
+ 			If [code]true[/code], [OccluderInstance3D] nodes will be usable for occlusion culling in 3D for this viewport. For the root viewport, [member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling] must be set to [code]true[/code] instead.
+ 			[b]Note:[/b] Enabling occlusion culling has a cost on the CPU. Only enable occlusion culling if you actually plan to use it, and think whether your scene can actually benefit from occlusion culling. Large, open scenes with few or no objects blocking the view will generally not benefit much from occlusion culling. Large open scenes generally benefit more from mesh LOD and visibility ranges ([member GeometryInstance3D.visibility_range_begin] and [member GeometryInstance3D.visibility_range_end]) compared to occlusion culling.
+diff --git a/drivers/gles3/storage/texture_storage.cpp b/drivers/gles3/storage/texture_storage.cpp
+index bd7b1db65caf..99a83b35f9f4 100644
+--- a/drivers/gles3/storage/texture_storage.cpp
++++ b/drivers/gles3/storage/texture_storage.cpp
+@@ -2969,6 +2969,28 @@ bool TextureStorage::render_target_is_using_hdr(RID p_render_target) const {
+ 	return rt->hdr;
+ }
+
++void TextureStorage::render_target_set_preserve_alpha(RID p_render_target, bool p_enable) {
++	RenderTarget *rt = render_target_owner.get_or_null(p_render_target);
++	ERR_FAIL_NULL(rt);
++	ERR_FAIL_COND(rt->direct_to_screen);
++	if (p_enable == rt->preserve_alpha) {
++		return;
++	}
++
++	if (rt->overridden.color.is_null()) {
++		_clear_render_target(rt);
++		rt->preserve_alpha = p_enable;
++		_update_render_target_color(rt);
++	}
++}
++
++bool TextureStorage::render_target_get_preserve_alpha(RID p_render_target) const {
++	RenderTarget *rt = render_target_owner.get_or_null(p_render_target);
++	ERR_FAIL_NULL_V(rt, false);
++
++	return rt->preserve_alpha;
++}
++
+ GLuint TextureStorage::render_target_get_color_internal_format(RID p_render_target) const {
+ 	RenderTarget *rt = render_target_owner.get_or_null(p_render_target);
+ 	ERR_FAIL_NULL_V(rt, GL_RGBA8);
+diff --git a/drivers/gles3/storage/texture_storage.h b/drivers/gles3/storage/texture_storage.h
+index a77c361df8cf..eb89600ee75d 100644
+--- a/drivers/gles3/storage/texture_storage.h
++++ b/drivers/gles3/storage/texture_storage.h
+@@ -362,6 +362,7 @@ struct RenderTarget {
+ 	Size2i velocity_target_size;
+
+ 	bool hdr = false; // For Compatibility this effects both 2D and 3D rendering!
++	bool preserve_alpha = false;
+ 	GLuint color_internal_format = GL_RGBA8;
+ 	GLuint color_format = GL_RGBA;
+ 	GLuint color_type = GL_UNSIGNED_BYTE;
+@@ -663,6 +664,8 @@ class TextureStorage : public RendererTextureStorage {
+ 	virtual void render_target_do_msaa_resolve(RID p_render_target) override {}
+ 	virtual void render_target_set_use_hdr(RID p_render_target, bool p_use_hdr_2d) override;
+ 	virtual bool render_target_is_using_hdr(RID p_render_target) const override;
++	virtual void render_target_set_preserve_alpha(RID p_render_target, bool p_enable) override;
++	virtual bool render_target_get_preserve_alpha(RID p_render_target) const override;
+ 	virtual void render_target_set_use_debanding(RID p_render_target, bool p_use_debanding) override {}
+ 	virtual bool render_target_is_using_debanding(RID p_render_target) const override { return false; }
+
+diff --git a/scene/main/viewport.cpp b/scene/main/viewport.cpp
+index 233f50e7c4ed..20f0d37cf9e7 100644
+--- a/scene/main/viewport.cpp
++++ b/scene/main/viewport.cpp
+@@ -1285,6 +1285,17 @@ bool Viewport::is_using_hdr_2d() const {
+ 	return use_hdr_2d;
+ }
+
++void Viewport::set_preserve_alpha(bool p_enable) {
++	ERR_MAIN_THREAD_GUARD;
++	preserve_alpha = p_enable;
++	RS::get_singleton()->viewport_set_preserve_alpha(viewport, p_enable);
++}
++
++bool Viewport::get_preserve_alpha() const {
++	ERR_READ_THREAD_GUARD_V(false);
++	return preserve_alpha;
++}
++
+ void Viewport::set_world_2d(const Ref<World2D> &p_world_2d) {
+ 	ERR_MAIN_THREAD_GUARD;
+ 	if (world_2d == p_world_2d) {
+@@ -4965,6 +4976,8 @@ void Viewport::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("has_transparent_background"), &Viewport::has_transparent_background);
+ 	ClassDB::bind_method(D_METHOD("set_use_hdr_2d", "enable"), &Viewport::set_use_hdr_2d);
+ 	ClassDB::bind_method(D_METHOD("is_using_hdr_2d"), &Viewport::is_using_hdr_2d);
++	ClassDB::bind_method(D_METHOD("set_preserve_alpha"), &Viewport::set_preserve_alpha);
++	ClassDB::bind_method(D_METHOD("get_preserve_alpha"), &Viewport::get_preserve_alpha);
+
+ 	ClassDB::bind_method(D_METHOD("set_msaa_2d", "msaa"), &Viewport::set_msaa_2d);
+ 	ClassDB::bind_method(D_METHOD("get_msaa_2d"), &Viewport::get_msaa_2d);
+@@ -5165,6 +5178,7 @@ void Viewport::_bind_methods() {
+ 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mesh_lod_threshold", PROPERTY_HINT_RANGE, "0,1024,0.1"), "set_mesh_lod_threshold", "get_mesh_lod_threshold");
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_draw", PROPERTY_HINT_ENUM, "Disabled,Unshaded,Lighting,Overdraw,Wireframe,Normal Buffer,VoxelGI Albedo,VoxelGI Lighting,VoxelGI Emission,Shadow Atlas,Directional Shadow Map,Scene Luminance,SSAO,SSIL,Directional Shadow Splits,Decal Atlas,SDFGI Cascades,SDFGI Probes,VoxelGI/SDFGI Buffer,Disable Mesh LOD,OmniLight3D Cluster,SpotLight3D Cluster,Decal Cluster,ReflectionProbe Cluster,Occlusion Culling Buffer,Motion Vectors,Internal Buffer"), "set_debug_draw", "get_debug_draw");
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_hdr_2d"), "set_use_hdr_2d", "is_using_hdr_2d");
++	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "preserve_alpha"), "set_preserve_alpha", "get_preserve_alpha");
+
+ #ifndef _3D_DISABLED
+ 	ADD_GROUP("Scaling 3D", "");
+diff --git a/scene/main/viewport.h b/scene/main/viewport.h
+index f45cc3375323..560a8263d402 100644
+--- a/scene/main/viewport.h
++++ b/scene/main/viewport.h
+@@ -263,6 +263,7 @@ class Viewport : public Node {
+
+ 	bool transparent_bg = false;
+ 	bool use_hdr_2d = false;
++	bool preserve_alpha = false;
+
+ 	bool snap_controls_to_pixels = true;
+ 	bool snap_2d_transforms_to_pixel = false;
+@@ -550,6 +551,9 @@ class Viewport : public Node {
+ 	void set_use_hdr_2d(bool p_enable);
+ 	bool is_using_hdr_2d() const;
+
++	void set_preserve_alpha(bool p_enable);
++	bool get_preserve_alpha() const;
++
+ 	Ref<ViewportTexture> get_texture() const;
+
+ 	void set_positional_shadow_atlas_size(int p_size);
+diff --git a/servers/rendering/dummy/storage/texture_storage.h b/servers/rendering/dummy/storage/texture_storage.h
+index 0d5d38c9195d..d8c4df1b9748 100644
+--- a/servers/rendering/dummy/storage/texture_storage.h
++++ b/servers/rendering/dummy/storage/texture_storage.h
+@@ -180,6 +180,8 @@ class TextureStorage : public RendererTextureStorage {
+ 	virtual void render_target_do_msaa_resolve(RID p_render_target) override {}
+ 	virtual void render_target_set_use_hdr(RID p_render_target, bool p_use_hdr_2d) override {}
+ 	virtual bool render_target_is_using_hdr(RID p_render_target) const override { return false; }
++	virtual void render_target_set_preserve_alpha(RID p_render_target, bool p_enable) override {}
++	virtual bool render_target_get_preserve_alpha(RID p_render_target) const override { return false; }
+ 	virtual void render_target_set_use_debanding(RID p_render_target, bool p_use_debanding) override {}
+ 	virtual bool render_target_is_using_debanding(RID p_render_target) const override { return false; }
+
+diff --git a/servers/rendering/renderer_rd/storage_rd/texture_storage.cpp b/servers/rendering/renderer_rd/storage_rd/texture_storage.cpp
+index 3c079cc8b7ab..89c372370b09 100644
+--- a/servers/rendering/renderer_rd/storage_rd/texture_storage.cpp
++++ b/servers/rendering/renderer_rd/storage_rd/texture_storage.cpp
+@@ -3943,6 +3943,25 @@ bool TextureStorage::render_target_is_using_hdr(RID p_render_target) const {
+ 	return rt->use_hdr;
+ }
+
++void TextureStorage::render_target_set_preserve_alpha(RID p_render_target, bool p_enable) {
++	RenderTarget *rt = render_target_owner.get_or_null(p_render_target);
++	ERR_FAIL_NULL(rt);
++
++	if (p_enable == rt->preserve_alpha) {
++		return;
++	}
++
++	rt->preserve_alpha = p_enable;
++	_update_render_target(rt);
++}
++
++bool TextureStorage::render_target_get_preserve_alpha(RID p_render_target) const {
++	RenderTarget *rt = render_target_owner.get_or_null(p_render_target);
++	ERR_FAIL_NULL_V(rt, false);
++
++	return rt->preserve_alpha;
++}
++
+ void TextureStorage::render_target_set_use_debanding(RID p_render_target, bool p_use_debanding) {
+ 	RenderTarget *rt = render_target_owner.get_or_null(p_render_target);
+ 	ERR_FAIL_NULL(rt);
+@@ -4367,12 +4386,12 @@ void TextureStorage::render_target_copy_to_back_buffer(RID p_render_target, cons
+ 	// TODO figure out stereo support here
+
+ 	if (RendererSceneRenderRD::get_singleton()->_render_buffers_can_be_storage()) {
+-		copy_effects->copy_to_rect(rt->color, rt->backbuffer_mipmap0, region, false, false, false, !rt->use_hdr, true);
++		copy_effects->copy_to_rect(rt->color, rt->backbuffer_mipmap0, region, false, false, false, !rt->use_hdr, !rt->preserve_alpha);
+ 	} else {
+ 		Rect2 src_rect = Rect2(region);
+ 		src_rect.position /= Size2(rt->size);
+ 		src_rect.size /= Size2(rt->size);
+-		copy_effects->copy_to_fb_rect(rt->color, rt->backbuffer_fb, region, false, false, false, false, RID(), false, true, false, false, src_rect);
++		copy_effects->copy_to_fb_rect(rt->color, rt->backbuffer_fb, region, false, false, false, false, RID(), false, !rt->preserve_alpha, false, false, src_rect);
+ 	}
+
+ 	if (!p_gen_mipmaps) {
+diff --git a/servers/rendering/renderer_rd/storage_rd/texture_storage.h b/servers/rendering/renderer_rd/storage_rd/texture_storage.h
+index 4a4767f91159..a482f28d8f98 100644
+--- a/servers/rendering/renderer_rd/storage_rd/texture_storage.h
++++ b/servers/rendering/renderer_rd/storage_rd/texture_storage.h
+@@ -370,6 +370,7 @@ class TextureStorage : public RendererTextureStorage {
+
+ 		bool is_transparent = false;
+ 		bool use_hdr = false;
++		bool preserve_alpha = false;
+ 		bool use_debanding = false;
+
+ 		bool sdf_enabled = false;
+@@ -764,6 +765,8 @@ class TextureStorage : public RendererTextureStorage {
+ 	virtual void render_target_do_msaa_resolve(RID p_render_target) override;
+ 	virtual void render_target_set_use_hdr(RID p_render_target, bool p_use_hdr) override;
+ 	virtual bool render_target_is_using_hdr(RID p_render_target) const override;
++	virtual void render_target_set_preserve_alpha(RID p_render_target, bool p_enable) override;
++	virtual bool render_target_get_preserve_alpha(RID p_render_target) const override;
+ 	virtual void render_target_set_use_debanding(RID p_render_target, bool p_use_debanding) override;
+ 	virtual bool render_target_is_using_debanding(RID p_render_target) const override;
+
+diff --git a/servers/rendering/renderer_viewport.cpp b/servers/rendering/renderer_viewport.cpp
+index b965ec6181a1..7bfb333017c9 100644
+--- a/servers/rendering/renderer_viewport.cpp
++++ b/servers/rendering/renderer_viewport.cpp
+@@ -1392,6 +1392,25 @@ bool RendererViewport::viewport_is_using_hdr_2d(RID p_viewport) const {
+ 	return viewport->use_hdr_2d;
+ }
+
++void RendererViewport::viewport_set_preserve_alpha(RID p_viewport, bool p_enable) {
++	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
++	ERR_FAIL_NULL(viewport);
++
++	if (viewport->preserve_alpha == p_enable) {
++		return;
++	}
++	viewport->preserve_alpha = p_enable;
++	RSG::texture_storage->render_target_set_preserve_alpha(viewport->render_target, p_enable);
++	_configure_3d_render_buffers(viewport);
++}
++
++bool RendererViewport::viewport_get_preserve_alpha(RID p_viewport) const {
++	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
++	ERR_FAIL_NULL_V(viewport, false);
++
++	return viewport->preserve_alpha;
++}
++
+ void RendererViewport::viewport_set_screen_space_aa(RID p_viewport, RS::ViewportScreenSpaceAA p_mode) {
+ 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+ 	ERR_FAIL_NULL(viewport);
+diff --git a/servers/rendering/renderer_viewport.h b/servers/rendering/renderer_viewport.h
+index fa506be98cd8..3a348f4c0f5a 100644
+--- a/servers/rendering/renderer_viewport.h
++++ b/servers/rendering/renderer_viewport.h
+@@ -116,6 +116,7 @@ class RendererViewport {
+
+ 		bool transparent_bg = false;
+ 		bool use_hdr_2d = false;
++		bool preserve_alpha = false;
+
+ 		uint32_t canvas_cull_mask = 0xffffffff;
+
+@@ -158,6 +159,7 @@ class RendererViewport {
+ 			clear_mode = RS::VIEWPORT_CLEAR_ALWAYS;
+ 			transparent_bg = false;
+ 			use_hdr_2d = false;
++			preserve_alpha = false;
+
+ 			viewport_to_screen = DisplayServer::INVALID_WINDOW_ID;
+ 			shadow_atlas_size = 0;
+@@ -260,8 +262,9 @@ class RendererViewport {
+ 	void viewport_set_canvas_transform(RID p_viewport, RID p_canvas, const Transform2D &p_offset);
+ 	void viewport_set_transparent_background(RID p_viewport, bool p_enabled);
+ 	void viewport_set_use_hdr_2d(RID p_viewport, bool p_use_hdr_2d);
+-
+ 	bool viewport_is_using_hdr_2d(RID p_viewport) const;
++	void viewport_set_preserve_alpha(RID p_viewport, bool p_enable);
++	bool viewport_get_preserve_alpha(RID p_viewport) const;
+
+ 	void viewport_set_global_canvas_transform(RID p_viewport, const Transform2D &p_transform);
+ 	void viewport_set_canvas_stacking(RID p_viewport, RID p_canvas, int p_layer, int p_sublayer);
+diff --git a/servers/rendering/rendering_server.cpp b/servers/rendering/rendering_server.cpp
+index 6e0db2c8ce4e..6763e65b85b8 100644
+--- a/servers/rendering/rendering_server.cpp
++++ b/servers/rendering/rendering_server.cpp
+@@ -2927,6 +2927,7 @@ void RenderingServer::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("viewport_set_msaa_3d", "viewport", "msaa"), &RenderingServer::viewport_set_msaa_3d);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_msaa_2d", "viewport", "msaa"), &RenderingServer::viewport_set_msaa_2d);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_use_hdr_2d", "viewport", "enabled"), &RenderingServer::viewport_set_use_hdr_2d);
++	ClassDB::bind_method(D_METHOD("viewport_set_preserve_alpha", "viewport", "enabled"), &RenderingServer::viewport_set_preserve_alpha);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_screen_space_aa", "viewport", "mode"), &RenderingServer::viewport_set_screen_space_aa);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_use_taa", "viewport", "enable"), &RenderingServer::viewport_set_use_taa);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_use_debanding", "viewport", "enable"), &RenderingServer::viewport_set_use_debanding);
+diff --git a/servers/rendering/rendering_server.h b/servers/rendering/rendering_server.h
+index 6cf24e66355d..a2b6efe678e8 100644
+--- a/servers/rendering/rendering_server.h
++++ b/servers/rendering/rendering_server.h
+@@ -1040,6 +1040,8 @@ class RenderingServer : public Object {
+ 	virtual void viewport_set_transparent_background(RID p_viewport, bool p_enabled) = 0;
+ 	virtual void viewport_set_use_hdr_2d(RID p_viewport, bool p_use_hdr) = 0;
+ 	virtual bool viewport_is_using_hdr_2d(RID p_viewport) const = 0;
++	virtual void viewport_set_preserve_alpha(RID p_viewport, bool p_enabled) = 0;
++	virtual bool viewport_get_preserve_alpha(RID p_viewport) const = 0;
+ 	virtual void viewport_set_snap_2d_transforms_to_pixel(RID p_viewport, bool p_enabled) = 0;
+ 	virtual void viewport_set_snap_2d_vertices_to_pixel(RID p_viewport, bool p_enabled) = 0;
+
+diff --git a/servers/rendering/rendering_server_default.h b/servers/rendering/rendering_server_default.h
+index 5ddde49c114f..2b5176f64dcf 100644
+--- a/servers/rendering/rendering_server_default.h
++++ b/servers/rendering/rendering_server_default.h
+@@ -735,6 +735,8 @@ class RenderingServerDefault : public RenderingServer {
+ 	FUNC2(viewport_set_transparent_background, RID, bool)
+ 	FUNC2(viewport_set_use_hdr_2d, RID, bool)
+ 	FUNC1RC(bool, viewport_is_using_hdr_2d, RID)
++	FUNC2(viewport_set_preserve_alpha, RID, bool)
++	FUNC1RC(bool, viewport_get_preserve_alpha, RID)
+ 	FUNC2(viewport_set_snap_2d_transforms_to_pixel, RID, bool)
+ 	FUNC2(viewport_set_snap_2d_vertices_to_pixel, RID, bool)
+
+diff --git a/servers/rendering/storage/texture_storage.h b/servers/rendering/storage/texture_storage.h
+index cef1ae2b1a6c..6849954da459 100644
+--- a/servers/rendering/storage/texture_storage.h
++++ b/servers/rendering/storage/texture_storage.h
+@@ -158,6 +158,8 @@ class RendererTextureStorage {
+ 	virtual void render_target_do_msaa_resolve(RID p_render_target) = 0;
+ 	virtual void render_target_set_use_hdr(RID p_render_target, bool p_use_hdr) = 0;
+ 	virtual bool render_target_is_using_hdr(RID p_render_target) const = 0;
++	virtual void render_target_set_preserve_alpha(RID p_render_target, bool p_enable) = 0;
++	virtual bool render_target_get_preserve_alpha(RID p_render_target) const = 0;
+ 	virtual void render_target_set_use_debanding(RID p_render_target, bool p_use_debanding) = 0;
+ 	virtual bool render_target_is_using_debanding(RID p_render_target) const = 0;
+
+
+From 2bd6d11893e918842639a982e08a2d604f6f9e70 Mon Sep 17 00:00:00 2001
+From: Joseph <jgoyer3@gmail.com>
+Date: Thu, 7 May 2026 17:47:25 -0400
+Subject: [PATCH 2/4] fix incorrect merge
+
+---
+ servers/rendering/renderer_viewport.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/servers/rendering/renderer_viewport.cpp b/servers/rendering/renderer_viewport.cpp
+index 074aac57f4ef..cccae41f458d 100644
+--- a/servers/rendering/renderer_viewport.cpp
++++ b/servers/rendering/renderer_viewport.cpp
+@@ -1445,7 +1445,7 @@ bool RendererViewport::viewport_get_preserve_alpha(RID p_viewport) const {
+ 	return viewport->preserve_alpha;
+ }
+
+-void RendererViewport::viewport_set_screen_space_aa(RID p_viewport, RS::ViewportScreenSpaceAA p_mode) {
++void RendererViewport::viewport_set_screen_space_aa(RID p_viewport, RSE::ViewportScreenSpaceAA p_mode) {
+ 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+ 	ERR_FAIL_NULL(viewport);
+ #ifdef DEBUG_ENABLED
+
+From 7657a34e1902fefa59690c91f6cdf48357b81d40 Mon Sep 17 00:00:00 2001
+From: Joseph <jgoyer3@gmail.com>
+Date: Thu, 7 May 2026 17:56:45 -0400
+Subject: [PATCH 3/4] update viewport preserve_alpha documention with
+ suggestions from copilot
+
+---
+ doc/classes/Viewport.xml | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/doc/classes/Viewport.xml b/doc/classes/Viewport.xml
+index 835960c06aa9..200935feb0d6 100644
+--- a/doc/classes/Viewport.xml
++++ b/doc/classes/Viewport.xml
+@@ -471,8 +471,9 @@
+ 			Practically speaking, this means that the end result of the Viewport will not be clamped to the [code]0-1[/code] range and can be used in 3D rendering without color encoding adjustments. This allows 2D rendering to take advantage of effects requiring high dynamic range (e.g. 2D glow) as well as substantially improves the appearance of effects requiring highly detailed gradients.
+ 		</member>
+ 		<member name="preserve_alpha" type="bool" setter="set_preserve_alpha" getter="get_preserve_alpha" default="false">
+-			If [code]true[/code], the alpha channel will be preserved when passed into shaders.
+-			[b]Note:[/b] Setting this to [code]true[/code] may break behavior.
++			If [code]true[/code], the viewport texture's alpha channel is preserved when sampled in shaders instead of being treated as fully opaque.
++ 			[b]Note:[/b] Enabling this changes the default alpha behavior of viewport textures and can break materials or shaders that assume the sampled alpha is always [code]1.0[/code]. It can also change blending and compositing results when the viewport texture is drawn over other content, especially if [member transparent_bg] is [code]true[/code].
++ 			This is intended for cases where the viewport's actual transparency information must be kept, such as compositing the viewport over another image or using its alpha data directly in a shader.ha channel will be preserved when passed into shaders, instead of using a constant value of [code]1.0[/code] for every pixel.
+ 		</member>
+ 		<member name="use_occlusion_culling" type="bool" setter="set_use_occlusion_culling" getter="is_using_occlusion_culling" default="false">
+ 			If [code]true[/code], [OccluderInstance3D] nodes will be usable for occlusion culling in 3D for this viewport. For the root viewport, [member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling] must be set to [code]true[/code] instead.
+
+From 4c89fedd3604b818fa108e4c11a091e49d867480 Mon Sep 17 00:00:00 2001
+From: Joseph <jgoyer3@gmail.com>
+Date: Thu, 7 May 2026 17:58:03 -0400
+Subject: [PATCH 4/4] fix update to documentation
+
+---
+ doc/classes/Viewport.xml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/doc/classes/Viewport.xml b/doc/classes/Viewport.xml
+index 200935feb0d6..17e23910b6e9 100644
+--- a/doc/classes/Viewport.xml
++++ b/doc/classes/Viewport.xml
+@@ -473,7 +473,7 @@
+ 		<member name="preserve_alpha" type="bool" setter="set_preserve_alpha" getter="get_preserve_alpha" default="false">
+ 			If [code]true[/code], the viewport texture's alpha channel is preserved when sampled in shaders instead of being treated as fully opaque.
+  			[b]Note:[/b] Enabling this changes the default alpha behavior of viewport textures and can break materials or shaders that assume the sampled alpha is always [code]1.0[/code]. It can also change blending and compositing results when the viewport texture is drawn over other content, especially if [member transparent_bg] is [code]true[/code].
+- 			This is intended for cases where the viewport's actual transparency information must be kept, such as compositing the viewport over another image or using its alpha data directly in a shader.ha channel will be preserved when passed into shaders, instead of using a constant value of [code]1.0[/code] for every pixel.
++ 			This is intended for cases where the viewport's actual transparency information must be kept, such as compositing the viewport over another image or using its alpha data directly in a shader.
+ 		</member>
+ 		<member name="use_occlusion_culling" type="bool" setter="set_use_occlusion_culling" getter="is_using_occlusion_culling" default="false">
+ 			If [code]true[/code], [OccluderInstance3D] nodes will be usable for occlusion culling in 3D for this viewport. For the root viewport, [member ProjectSettings.rendering/occlusion_culling/use_occlusion_culling] must be set to [code]true[/code] instead.
