@@ -1,0 +1,400 @@
+From 147c9faf556597786d6dfdbdb3666fb33a7c534e Mon Sep 17 00:00:00 2001
+From: X23 <2284899547@qq.com>
+Date: Thu, 27 Nov 2025 01:39:32 +0800
+Subject: [PATCH] Implement compose() function that runs after light() in
+ spatial shaders.
+
+This closes proposal [#484](https://github.com/godotengine/godot/issues/484) and proposal [#10527](https://github.com/godotengine/godot/issues/10527).
+It also supersedes pull request [#102708](https://github.com/godotengine/godot/issues/102708).
+
+Compared to [#102708](https://github.com/godotengine/godot/issues/102708), this pull request has improved compatibility
+with other rendering features. It properly supports decals, SSR and SSS.
+---
+ drivers/gles3/shaders/scene.glsl              | 23 +++++++++
+ drivers/gles3/storage/material_storage.cpp    |  8 +++
+ editor/shader/text_shader_language_plugin.cpp |  5 ++
+ .../scene_shader_forward_clustered.cpp        |  7 +++
+ .../scene_shader_forward_mobile.cpp           |  7 +++
+ .../scene_forward_clustered.glsl              | 47 ++++++++++++++++--
+ .../forward_mobile/scene_forward_mobile.glsl  | 49 +++++++++++++++++++
+ servers/rendering/shader_language.cpp         | 11 +++--
+ servers/rendering/shader_language.h           |  2 +
+ servers/rendering/shader_types.cpp            | 39 +++++++++++++++
+ 10 files changed, 189 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/gles3/shaders/scene.glsl b/drivers/gles3/shaders/scene.glsl
+index 974721f89138..d2b51806e873 100644
+--- a/drivers/gles3/shaders/scene.glsl
++++ b/drivers/gles3/shaders/scene.glsl
+@@ -2512,6 +2512,9 @@ void main() {
+ 	emission_output_buffer.a = 0.0;
+ #else // !RENDER_MATERIAL
+ #ifdef BASE_PASS
++
++#ifndef COMPOSE_CODE_USED
++
+ #ifdef MODE_UNSHADED
+ 	frag_color = vec4(albedo, alpha);
+ #else
+@@ -2531,6 +2534,26 @@ void main() {
+ 	frag_color.rgb = mix(frag_color.rgb, fog.rgb, fog.a);
+ #endif // !FOG_DISABLED
+
++#else //COMPOSE_CODE_USED
++	{
++#ifndef FOG_DISABLED
++		fog.xy = unpackHalf2x16(fog_rg);
++		fog.zw = unpackHalf2x16(fog_ba);
++#else
++		vec4 fog = vec4(0.0);
++#endif
++		// output variables, init to 0 when using compose()
++		vec3 diffuse_color = vec3(0.0);
++		vec3 specular_color = vec3(0.0);
++		// dummy variable
++		vec3 indirect_specular_light = vec3(0.0);
++
++#CODE : COMPOSE
++
++		frag_color = vec4(diffuse_color + specular_color, alpha);
++	}
++#endif //COMPOSE_CODE_USED
++
+ 	// Tonemap before writing as we are writing to an sRGB framebuffer
+ 	frag_color.rgb *= exposure;
+ #ifdef APPLY_TONEMAPPING
+diff --git a/drivers/gles3/storage/material_storage.cpp b/drivers/gles3/storage/material_storage.cpp
+index f347b488b210..2c26110e4d4b 100644
+--- a/drivers/gles3/storage/material_storage.cpp
++++ b/drivers/gles3/storage/material_storage.cpp
+@@ -1343,6 +1343,13 @@ MaterialStorage::MaterialStorage() {
+ 		actions.renames["DIFFUSE_LIGHT"] = "diffuse_light";
+ 		actions.renames["SPECULAR_LIGHT"] = "specular_light";
+
++		// for compose
++		actions.renames["DIFFUSE_COLOR"] = "diffuse_color";
++		actions.renames["SPECULAR_COLOR"] = "specular_color";
++		actions.renames["INDIRECT_SPECULAR_LIGHT"] = "indirect_specular_light";
++		actions.renames["AMBIENT_LIGHT"] = "ambient_light";
++		actions.renames["FINAL_FOG"] = "fog";
++
+ 		actions.usage_defines["NORMAL"] = "#define NORMAL_USED\n";
+ 		actions.usage_defines["TANGENT"] = "#define TANGENT_USED\n";
+ 		actions.usage_defines["BINORMAL"] = "@TANGENT";
+@@ -2983,6 +2990,7 @@ void SceneShaderData::set_code(const String &p_code) {
+ 	actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+ 	actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+ 	actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
++	actions.entry_point_stages["compose"] = ShaderCompiler::STAGE_FRAGMENT;
+
+ 	actions.render_mode_values["blend_add"] = Pair<int *, int>(&blend_modei, BLEND_MODE_ADD);
+ 	actions.render_mode_values["blend_mix"] = Pair<int *, int>(&blend_modei, BLEND_MODE_MIX);
+diff --git a/editor/shader/text_shader_language_plugin.cpp b/editor/shader/text_shader_language_plugin.cpp
+index 530e8ab80542..8ea5fbf6ec6e 100644
+--- a/editor/shader/text_shader_language_plugin.cpp
++++ b/editor/shader/text_shader_language_plugin.cpp
+@@ -81,6 +81,11 @@ void fragment() {
+ //	// Called for every pixel for every light affecting the material.
+ //	// Uncomment to replace the default light processing function with this one.
+ //}
++
++//void compose() {
++//	// Similar to fragment(), but runs after light().
++//	// Uncomment to replace the default composing function with this one.
++//}
+ )";
+ 			} break;
+ 			case Shader::MODE_CANVAS_ITEM: {
+diff --git a/servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp b/servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
+index c79c6998272e..c2bb114578f4 100644
+--- a/servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
++++ b/servers/rendering/renderer_rd/forward_clustered/scene_shader_forward_clustered.cpp
+@@ -94,6 +94,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
+ 	actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+ 	actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+ 	actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
++	actions.entry_point_stages["compose"] = ShaderCompiler::STAGE_FRAGMENT;
+
+ 	actions.render_mode_values["blend_add"] = Pair<int *, int>(&blend_mode, BLEND_MODE_ADD);
+ 	actions.render_mode_values["blend_mix"] = Pair<int *, int>(&blend_mode, BLEND_MODE_MIX);
+@@ -774,6 +775,12 @@ void SceneShaderForwardClustered::init(const String p_defines) {
+ 		actions.renames["VIEW_RIGHT"] = "1";
+ 		actions.renames["EYE_OFFSET"] = "eye_offset";
+
++		actions.renames["DIFFUSE_COLOR"] = "diffuse_color";
++		actions.renames["SPECULAR_COLOR"] = "specular_color";
++		actions.renames["INDIRECT_SPECULAR_LIGHT"] = "indirect_specular_light";
++		actions.renames["AMBIENT_LIGHT"] = "ambient_light";
++		actions.renames["FINAL_FOG"] = "fog";
++
+ 		//for light
+ 		actions.renames["VIEW"] = "view_highp";
+ 		actions.renames["SPECULAR_AMOUNT"] = "specular_amount_highp";
+diff --git a/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp
+index bb1faa199884..84fd8a7ffdc0 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp
+@@ -94,6 +94,7 @@ void SceneShaderForwardMobile::ShaderData::set_code(const String &p_code) {
+ 	actions.entry_point_stages["vertex"] = ShaderCompiler::STAGE_VERTEX;
+ 	actions.entry_point_stages["fragment"] = ShaderCompiler::STAGE_FRAGMENT;
+ 	actions.entry_point_stages["light"] = ShaderCompiler::STAGE_FRAGMENT;
++	actions.entry_point_stages["compose"] = ShaderCompiler::STAGE_FRAGMENT;
+
+ 	actions.render_mode_values["blend_add"] = Pair<int *, int>(&blend_mode, BLEND_MODE_ADD);
+ 	actions.render_mode_values["blend_mix"] = Pair<int *, int>(&blend_mode, BLEND_MODE_MIX);
+@@ -709,6 +710,12 @@ void SceneShaderForwardMobile::init(const String p_defines) {
+ 		actions.renames["VIEW_RIGHT"] = "1";
+ 		actions.renames["EYE_OFFSET"] = "eye_offset";
+
++		actions.renames["DIFFUSE_COLOR"] = "diffuse_color";
++		actions.renames["SPECULAR_COLOR"] = "specular_color";
++		actions.renames["INDIRECT_SPECULAR_LIGHT"] = "indirect_specular_light";
++		actions.renames["AMBIENT_LIGHT"] = "ambient_light";
++		actions.renames["FINAL_FOG"] = "fog_highp";
++
+ 		//for light
+ 		actions.renames["VIEW"] = "view_highp";
+ 		actions.renames["SPECULAR_AMOUNT"] = "specular_amount_highp";
+diff --git a/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl b/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl
+index 8d9cbc3fd9e1..6e00ba08a3ac 100644
+--- a/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl
++++ b/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl
+@@ -2858,6 +2858,12 @@ void fragment_shader(in SceneData scene_data) {
+ //nothing happens, so a tree-ssa optimizer will result in no fragment shader :)
+ #else
+
++#ifndef FOG_DISABLED
++	//restore fog
++	fog = vec4(unpackHalf2x16(fog_rg), unpackHalf2x16(fog_ba));
++#endif //!FOG_DISABLED
++
++#ifndef COMPOSE_CODE_USED
+ 	// multiply by albedo
+ 	diffuse_light *= albedo; // ambient must be multiplied by albedo at the end
+
+@@ -2869,11 +2875,6 @@ void fragment_shader(in SceneData scene_data) {
+ 	diffuse_light *= 1.0 - metallic;
+ 	ambient_light *= 1.0 - metallic;
+
+-#ifndef FOG_DISABLED
+-	//restore fog
+-	fog = vec4(unpackHalf2x16(fog_rg), unpackHalf2x16(fog_ba));
+-#endif //!FOG_DISABLED
+-
+ #ifdef MODE_SEPARATE_SPECULAR
+
+ #ifdef MODE_UNSHADED
+@@ -2915,6 +2916,42 @@ void fragment_shader(in SceneData scene_data) {
+
+ #endif //MODE_SEPARATE_SPECULAR
+
++#else //COMPOSE_CODE_USED
++	{
++		// output variables, init to 0 when using compose()
++		vec3 diffuse_color = vec3(0.0);
++		vec3 specular_color = vec3(0.0);
++		// fix the names for compose() code
++		vec3 diffuse_light_highp = diffuse_light;
++		vec3 specular_light_highp = direct_specular_light;
++		// reassign surface properties so that effects of decals, etc. are accessible in compose()
++		vec3 albedo_highp = albedo;
++		float metallic_highp = metallic;
++		float roughness_highp = roughness;
++		float alpha_highp = alpha;
++#ifdef NORMAL_USED
++		vec3 normal_highp = normal;
++#endif
++
++#ifdef FOG_DISABLED
++		vec4 fog = vec4(0.0);
++#else
++		// maintain compatibility with other renderers in compose()
++		fog.a = 1.0 - fog.a;
++		fog.rgb /= max(1e-5, fog.a);
++#endif
++
++#CODE : COMPOSE
++
++#ifdef MODE_SEPARATE_SPECULAR
++		diffuse_buffer = vec4(diffuse_color, sss_strength);
++		specular_buffer = vec4(specular_color, metallic);
++#else
++		frag_color = vec4(diffuse_color + specular_color, alpha_highp);
++#endif
++	}
++#endif //COMPOSE_CODE_USED
++
+ #endif //MODE_RENDER_DEPTH
+ #ifdef MOTION_VECTORS
+ 	vec2 position_clip = (screen_position.xy / screen_position.w) - scene_data.taa_jitter;
+diff --git a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+index b9f1018ccdb3..04d600726611 100644
+--- a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
++++ b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+@@ -2172,6 +2172,8 @@ void main() {
+
+ #else // MODE_RENDER_DEPTH
+
++#ifndef COMPOSE_CODE_USED
++
+ 	// multiply by albedo
+ 	diffuse_light *= albedo; // ambient must be multiplied by albedo at the end
+
+@@ -2249,6 +2251,53 @@ void main() {
+
+ #endif //MODE_MULTIPLE_RENDER_TARGETS
+
++#else //COMPOSE_CODE_USED
++	{
++		// output variables, init to 0 when using compose()
++		vec3 diffuse_color = vec3(0.0);
++		vec3 specular_color = vec3(0.0);
++		// fix the names for compose() code
++		vec3 diffuse_light_highp = diffuse_light;
++		vec3 specular_light_highp = direct_specular_light;
++		// reassign surface properties so that effects of decals, etc. are accessible in compose()
++		vec3 albedo_highp = albedo;
++		float metallic_highp = metallic;
++		float specular_highp = specular;
++		float roughness_highp = roughness;
++		float alpha_highp = alpha;
++#ifdef NORMAL_USED
++		vec3 normal_highp = normal;
++#endif
++#ifdef TANGENT_USED
++		vec3 tangent_highp = tangent;
++		vec3 binormal_highp = binormal;
++#endif
++
++#ifdef FOG_DISABLED
++		vec4 fog_highp = vec4(0.0);
++#else
++		vec4 fog_highp = fog;
++#endif
++
++#CODE : COMPOSE
++
++#ifdef MODE_MULTIPLE_RENDER_TARGETS
++		diffuse_buffer = vec4(diffuse_color, sss_strength);
++		specular_buffer = vec4(specular_color, metallic);
++#else
++		frag_color = vec4(diffuse_color + specular_color, alpha_highp);
++
++		if (sc_use_material_debanding()) {
++			// see the ndef COMPOSE_CODE_USED branch for explanation on this
++			const vec2 dither_offset = vec2(0.535, 8.715);
++			vec3 dither = vec3(dot(vec2(171.0, 231.0), gl_FragCoord.xy + dither_offset));
++			dither.rgb = fract(dither.rgb / vec3(103.0, 71.0, 97.0));
++			frag_color.rgb += (dither.rgb - 0.5) / 1023.0;
++		}
++#endif
++	}
++#endif //COMPOSE_CODE_USED
++
+ #endif //MODE_RENDER_DEPTH
+
+ #ifdef MODE_RENDER_MOTION_VECTORS
+diff --git a/servers/rendering/shader_language.cpp b/servers/rendering/shader_language.cpp
+index b772fa417de3..095a4e3b16bf 100644
+--- a/servers/rendering/shader_language.cpp
++++ b/servers/rendering/shader_language.cpp
+@@ -5403,7 +5403,7 @@ bool ShaderLanguage::_is_operator_assign(Operator p_op) const {
+ }
+
+ bool ShaderLanguage::_validate_varying_assign(ShaderNode::Varying &p_varying, String *r_message) {
+-	if (current_function != "vertex" && current_function != "fragment") {
++	if (current_function != "vertex" && current_function != "fragment" && current_function != "light") {
+ 		*r_message = vformat(RTR("Varying may not be assigned in the '%s' function."), current_function);
+ 		return false;
+ 	}
+@@ -5417,17 +5417,20 @@ bool ShaderLanguage::_validate_varying_assign(ShaderNode::Varying &p_varying, St
+ 				p_varying.stage = ShaderNode::Varying::STAGE_VERTEX;
+ 			} else if (current_function == varying_function_names.fragment) {
+ 				p_varying.stage = ShaderNode::Varying::STAGE_FRAGMENT;
++			} else if (current_function == varying_function_names.light) {
++				*r_message = vformat(RTR("Varying may not be first assigned in the '%s' function."), current_function);
++				return false;
+ 			}
+ 			break;
+ 		case ShaderNode::Varying::STAGE_VERTEX:
+-			if (current_function == varying_function_names.fragment) {
+-				*r_message = vformat(RTR("Varyings which assigned in '%s' function may not be reassigned in '%s' or '%s'."), "vertex", "fragment", "light");
++			if (current_function == varying_function_names.fragment || current_function == varying_function_names.light) {
++				*r_message = vformat(RTR("Varyings which assigned in '%s' function may not be reassigned in any of these functions: [%s]."), "vertex", String(", ").join({ "fragment", "light", "compose" }));
+ 				return false;
+ 			}
+ 			break;
+ 		case ShaderNode::Varying::STAGE_FRAGMENT:
+ 			if (current_function == varying_function_names.vertex) {
+-				*r_message = vformat(RTR("Varyings which assigned in '%s' function may not be reassigned in '%s' or '%s'."), "fragment", "vertex", "light");
++				*r_message = vformat(RTR("Varyings which assigned in '%s' function may not be reassigned in any of these functions: [%s]."), "fragment", String(", ").join({ "vertex", "compose" }));
+ 				return false;
+ 			}
+ 			break;
+diff --git a/servers/rendering/shader_language.h b/servers/rendering/shader_language.h
+index ce9244d95287..f55aaafe36ac 100644
+--- a/servers/rendering/shader_language.h
++++ b/servers/rendering/shader_language.h
+@@ -352,10 +352,12 @@ class ShaderLanguage {
+ 		StringName fragment;
+ 		StringName vertex;
+ 		StringName light;
++		StringName compose;
+ 		VaryingFunctionNames() {
+ 			fragment = "fragment";
+ 			vertex = "vertex";
+ 			light = "light";
++			compose = "compose";
+ 		}
+ 	};
+
+diff --git a/servers/rendering/shader_types.cpp b/servers/rendering/shader_types.cpp
+index edc2c550f962..ebd3a2b9c448 100644
+--- a/servers/rendering/shader_types.cpp
++++ b/servers/rendering/shader_types.cpp
+@@ -227,6 +227,45 @@ ShaderTypes::ShaderTypes() {
+ 	shader_modes[RS::SHADER_SPATIAL].functions["light"].can_discard = true;
+ 	shader_modes[RS::SHADER_SPATIAL].functions["light"].main_function = true;
+
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["DIFFUSE_COLOR"] = ShaderLanguage::TYPE_VEC3;
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["SPECULAR_COLOR"] = ShaderLanguage::TYPE_VEC3;
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["ALPHA"] = ShaderLanguage::TYPE_FLOAT;
++
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["MODEL_MATRIX"] = constt(ShaderLanguage::TYPE_MAT4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["VIEW_MATRIX"] = constt(ShaderLanguage::TYPE_MAT4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["INV_VIEW_MATRIX"] = constt(ShaderLanguage::TYPE_MAT4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["PROJECTION_MATRIX"] = constt(ShaderLanguage::TYPE_MAT4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["INV_PROJECTION_MATRIX"] = constt(ShaderLanguage::TYPE_MAT4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["VIEWPORT_SIZE"] = constt(ShaderLanguage::TYPE_VEC2);
++
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["FRAGCOORD"] = constt(ShaderLanguage::TYPE_VEC4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["NORMAL"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["TANGENT"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["BINORMAL"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["UV"] = constt(ShaderLanguage::TYPE_VEC2);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["UV2"] = constt(ShaderLanguage::TYPE_VEC2);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["VIEW"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["SCREEN_UV"] = constt(ShaderLanguage::TYPE_VEC2);
++
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["AMBIENT_LIGHT"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["DIFFUSE_LIGHT"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["SPECULAR_LIGHT"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["INDIRECT_SPECULAR_LIGHT"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["FINAL_FOG"] = constt(ShaderLanguage::TYPE_VEC4);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["BACKLIGHT"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["AO"] = constt(ShaderLanguage::TYPE_FLOAT);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["AO_LIGHT_AFFECT"] = constt(ShaderLanguage::TYPE_FLOAT);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["SSS_STRENGTH"] = constt(ShaderLanguage::TYPE_FLOAT);
++
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["EMISSION"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["ALBEDO"] = constt(ShaderLanguage::TYPE_VEC3);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["SPECULAR"] = constt(ShaderLanguage::TYPE_FLOAT);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["METALLIC"] = constt(ShaderLanguage::TYPE_FLOAT);
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].built_ins["ROUGHNESS"] = constt(ShaderLanguage::TYPE_FLOAT);
++
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].can_discard = true;
++	shader_modes[RS::SHADER_SPATIAL].functions["compose"].main_function = true;
++
+ 	// spatial render modes
+ 	{
+ 		shader_modes[RS::SHADER_SPATIAL].modes.push_back({ PNAME("blend"), "mix", "add", "sub", "mul", "premul_alpha" });

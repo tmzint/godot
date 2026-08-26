@@ -1,0 +1,181 @@
+From 3cdd6f6dec8cd20991dc5ace555dbc7ab14cfca0 Mon Sep 17 00:00:00 2001
+From: Altarick <github.grain106@passmail.net>
+Date: Sun, 8 Feb 2026 02:05:15 +0100
+Subject: [PATCH] Fix to compose in gdschader, AMBIENT_LIGHT now returns the
+ ambient light, and not the product of ambient lighting on the albedo
+
+---
+ drivers/gles3/shaders/scene.glsl                 |  9 +++++----
+ .../scene_forward_clustered.glsl                 | 16 +++++++++-------
+ .../forward_mobile/scene_forward_mobile.glsl     | 11 ++++++-----
+ 3 files changed, 20 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/gles3/shaders/scene.glsl b/drivers/gles3/shaders/scene.glsl
+index 019d4150e1e1..a138fe489504 100644
+--- a/drivers/gles3/shaders/scene.glsl
++++ b/drivers/gles3/shaders/scene.glsl
+@@ -2194,6 +2194,7 @@ void main() {
+ 	vec3 specular_light = vec3(0.0, 0.0, 0.0);
+ 	vec3 diffuse_light = vec3(0.0, 0.0, 0.0);
+ 	vec3 ambient_light = vec3(0.0, 0.0, 0.0);
++	vec3 ambient_light_resulting = vec3(0.0, 0.0, 0.0);
+
+ #ifdef BASE_PASS
+ 	/////////////////////// LIGHTING //////////////////////////////
+@@ -2356,7 +2357,7 @@ void main() {
+ 	specular_occlusion = max(min(reflective_f * specular_occlusion * 10.0, 1.0), specular_occlusion);
+ 	specular_light *= specular_occlusion;
+ #endif // !SPECULAR_OCCLUSION_DISABLED
+-	ambient_light *= albedo.rgb;
++	ambient_light_resulting = ambient_light * albedo.rgb;
+
+ #endif // !AMBIENT_LIGHT_DISABLED
+
+@@ -2476,7 +2477,7 @@ void main() {
+ #if defined(USE_SHADOW_TO_OPACITY)
+ #ifndef MODE_RENDER_DEPTH
+ #ifndef MODE_UNSHADED
+-	alpha = min(alpha, clamp(length(ambient_light), 0.0, 1.0));
++	alpha = min(alpha, clamp(length(ambient_light_resulting), 0.0, 1.0));
+ #else
+ 	alpha = 0.0;
+ #endif
+@@ -2533,10 +2534,10 @@ void main() {
+
+ 	diffuse_light *= albedo;
+ 	diffuse_light *= 1.0 - metallic;
+-	ambient_light *= 1.0 - metallic;
++	ambient_light_resulting *= 1.0 - metallic;
+
+ 	frag_color = vec4(diffuse_light + specular_light, alpha);
+-	frag_color.rgb += emission + ambient_light;
++	frag_color.rgb += emission + ambient_light_resulting;
+ #endif //!MODE_UNSHADED
+
+ #ifndef FOG_DISABLED
+diff --git a/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl b/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl
+index 32247aef8750..c1513bc6967a 100644
+--- a/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl
++++ b/servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl
+@@ -1659,6 +1659,8 @@ void fragment_shader(in SceneData scene_data) {
+ 	vec3 indirect_specular_light = vec3(0.0, 0.0, 0.0);
+ 	vec3 diffuse_light = vec3(0.0, 0.0, 0.0);
+ 	vec3 ambient_light = vec3(0.0, 0.0, 0.0);
++	vec3 ambient_light_resulting = vec3(0.0, 0.0, 0.0);
++
+ #ifndef MODE_UNSHADED
+ 	// Used in regular draw pass and when drawing SDFs for SDFGI and materials for VoxelGI.
+ 	emission *= scene_data.emissive_exposure_normalization;
+@@ -2144,7 +2146,7 @@ void fragment_shader(in SceneData scene_data) {
+ 		indirect_specular_light *= specular_occlusion;
+ #endif // BENT_NORMAL_MAP_USED
+ #endif // SPECULAR_OCCLUSION_DISABLED
+-		ambient_light *= albedo.rgb;
++		ambient_light_resulting = ambient_light * albedo.rgb;
+
+ 		if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL)) {
+ #ifdef USE_MULTIVIEW
+@@ -2152,8 +2154,8 @@ void fragment_shader(in SceneData scene_data) {
+ #else
+ 			vec4 ssil = textureLod(sampler2D(ssil_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
+ #endif // USE_MULTIVIEW
+-			ambient_light *= 1.0 - ssil.a;
+-			ambient_light += ssil.rgb * albedo.rgb;
++			ambient_light_resulting *= 1.0 - ssil.a;
++			ambient_light_resulting += ssil.rgb * albedo.rgb;
+ 		}
+
+ 		//process ssr
+@@ -2757,7 +2759,7 @@ void fragment_shader(in SceneData scene_data) {
+
+ #ifdef USE_SHADOW_TO_OPACITY
+ #ifndef MODE_RENDER_DEPTH
+-	alpha = min(alpha, clamp(length(ambient_light), 0.0, 1.0));
++	alpha = min(alpha, clamp(length(ambient_light_resulting), 0.0, 1.0));
+
+ #if defined(ALPHA_SCISSOR_USED)
+ #ifdef MODE_RENDER_MATERIAL
+@@ -2934,7 +2936,7 @@ void fragment_shader(in SceneData scene_data) {
+
+ 	// apply metallic
+ 	diffuse_light *= 1.0 - metallic;
+-	ambient_light *= 1.0 - metallic;
++	ambient_light_resulting *= 1.0 - metallic;
+
+ #ifdef MODE_SEPARATE_SPECULAR
+
+@@ -2947,7 +2949,7 @@ void fragment_shader(in SceneData scene_data) {
+ #ifdef SSS_MODE_SKIN
+ 	sss_strength = -sss_strength;
+ #endif
+-	diffuse_buffer = vec4(emission + diffuse_light + ambient_light, sss_strength);
++	diffuse_buffer = vec4(emission + diffuse_light + ambient_light_resulting, sss_strength);
+ 	specular_buffer = vec4(direct_specular_light + indirect_specular_light, metallic);
+ #endif
+
+@@ -2963,7 +2965,7 @@ void fragment_shader(in SceneData scene_data) {
+ #ifdef MODE_UNSHADED
+ 	frag_color = vec4(albedo, alpha);
+ #else
+-	frag_color = vec4(emission + ambient_light + diffuse_light + direct_specular_light + indirect_specular_light, alpha);
++	frag_color = vec4(emission + ambient_light_resulting + diffuse_light + direct_specular_light + indirect_specular_light, alpha);
+ //frag_color = vec4(1.0);
+ #endif //USE_NO_SHADING
+
+diff --git a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+index 2656f555c033..00e51afacfd1 100644
+--- a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
++++ b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+@@ -1563,6 +1563,7 @@ void main() {
+ 	hvec3 direct_specular_light = hvec3(0.0);
+ 	hvec3 diffuse_light = hvec3(0.0);
+ 	hvec3 ambient_light = hvec3(0.0);
++	hvec3 ambient_light_resulting = hvec3(0.0);
+
+ #ifndef MODE_UNSHADED
+ 	// Used in regular draw pass and when drawing SDFs for SDFGI and materials for VoxelGI.
+@@ -1830,7 +1831,7 @@ void main() {
+ 	indirect_specular_light *= specular_occlusion;
+ #endif // BENT_NORMAL_MAP_USED
+ #endif // USE_SPECULAR_OCCLUSION
+-	ambient_light *= albedo.rgb;
++	ambient_light_resulting = ambient_light * albedo.rgb;
+
+ #endif // !AMBIENT_LIGHT_DISABLED
+
+@@ -2180,7 +2181,7 @@ void main() {
+
+ #ifdef USE_SHADOW_TO_OPACITY
+ #ifndef MODE_RENDER_DEPTH
+-	alpha = min(alpha, clamp(length(ambient_light), half(0.0), half(1.0)));
++	alpha = min(alpha, clamp(length(ambient_light_resulting), half(0.0), half(1.0)));
+
+ #if defined(ALPHA_SCISSOR_USED)
+ #ifdef MODE_RENDER_MATERIAL
+@@ -2232,7 +2233,7 @@ void main() {
+
+ 	// apply metallic
+ 	diffuse_light *= half(1.0) - metallic;
+-	ambient_light *= half(1.0) - metallic;
++	ambient_light_resulting *= half(1.0) - metallic;
+
+ #ifdef MODE_MULTIPLE_RENDER_TARGETS
+
+@@ -2245,7 +2246,7 @@ void main() {
+ #ifdef SSS_MODE_SKIN
+ 	sss_strength = -sss_strength;
+ #endif // SSS_MODE_SKIN
+-	diffuse_buffer = vec4(emission + diffuse_light + ambient_light, sss_strength);
++	diffuse_buffer = vec4(emission + diffuse_light + ambient_light_resulting, sss_strength);
+ 	specular_buffer = vec4(direct_specular_light + indirect_specular_light, metallic);
+ #endif // MODE_UNSHADED
+
+@@ -2259,7 +2260,7 @@ void main() {
+ #ifdef MODE_UNSHADED
+ 	hvec4 out_color = hvec4(albedo, alpha);
+ #else // MODE_UNSHADED
+-	hvec4 out_color = hvec4(emission + ambient_light + diffuse_light + direct_specular_light + indirect_specular_light, alpha);
++	hvec4 out_color = hvec4(emission + ambient_light_resulting + diffuse_light + direct_specular_light + indirect_specular_light, alpha);
+ #endif // MODE_UNSHADED
+
+ #ifndef FOG_DISABLED
