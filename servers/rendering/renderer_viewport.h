@@ -118,6 +118,7 @@ public:
 		bool transparent_bg = false;
 		bool use_hdr_2d = false;
 		float window_output_max_value = 1.0;
+		bool preserve_alpha = false;
 
 		uint32_t canvas_cull_mask = 0xffffffff;
 
@@ -161,6 +162,7 @@ public:
 			transparent_bg = false;
 			use_hdr_2d = false;
 			window_output_max_value = 1.0;
+			preserve_alpha = false;
 
 			viewport_to_screen = DisplayServerEnums::INVALID_WINDOW_ID;
 			shadow_atlas_size = 0;
@@ -266,6 +268,8 @@ public:
 	void viewport_set_use_hdr_2d(RID p_viewport, bool p_use_hdr_2d);
 
 	bool viewport_is_using_hdr_2d(RID p_viewport) const;
+	void viewport_set_preserve_alpha(RID p_viewport, bool p_enable);
+	bool viewport_get_preserve_alpha(RID p_viewport) const;
 
 	void viewport_set_global_canvas_transform(RID p_viewport, const Transform2D &p_transform);
 	void viewport_set_canvas_stacking(RID p_viewport, RID p_canvas, int p_layer, int p_sublayer);
