@@ -2403,6 +2403,7 @@ void main() {
 	vec3 specular_light = vec3(0.0, 0.0, 0.0);
 	vec3 diffuse_light = vec3(0.0, 0.0, 0.0);
 	vec3 ambient_light = vec3(0.0, 0.0, 0.0);
+	vec3 ambient_light_resulting = vec3(0.0, 0.0, 0.0);
 
 #ifdef BASE_PASS
 	/////////////////////// LIGHTING //////////////////////////////
@@ -2577,7 +2578,7 @@ void main() {
 	specular_light *= specular_occlusion;
 #endif // BENT_NORMAL_MAP_USED
 #endif // !SPECULAR_OCCLUSION_DISABLED
-	ambient_light *= albedo.rgb;
+	ambient_light_resulting = ambient_light * albedo.rgb;
 
 #endif // !AMBIENT_LIGHT_DISABLED
 
@@ -2723,7 +2724,7 @@ void main() {
 #if defined(USE_SHADOW_TO_OPACITY)
 #ifndef MODE_RENDER_DEPTH
 #ifndef MODE_UNSHADED
-	alpha = min(alpha, clamp(length(ambient_light), 0.0, 1.0));
+	alpha = min(alpha, clamp(length(ambient_light_resulting), 0.0, 1.0));
 #else
 	alpha = 0.0;
 #endif
@@ -2780,10 +2781,10 @@ void main() {
 
 	diffuse_light *= albedo;
 	diffuse_light *= 1.0 - metallic;
-	ambient_light *= 1.0 - metallic;
+	ambient_light_resulting *= 1.0 - metallic;
 
 	frag_color = vec4(diffuse_light + specular_light, alpha);
-	frag_color.rgb += emission + ambient_light;
+	frag_color.rgb += emission + ambient_light_resulting;
 #endif //!MODE_UNSHADED
 
 #ifndef FOG_DISABLED

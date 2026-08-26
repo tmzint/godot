@@ -1677,6 +1677,8 @@ void fragment_shader(in SceneData scene_data) {
 	vec3 indirect_specular_light = vec3(0.0, 0.0, 0.0);
 	vec3 diffuse_light = vec3(0.0, 0.0, 0.0);
 	vec3 ambient_light = vec3(0.0, 0.0, 0.0);
+	vec3 ambient_light_resulting = vec3(0.0, 0.0, 0.0);
+
 #ifndef MODE_UNSHADED
 	// Used in regular draw pass and when drawing SDFs for SDFGI and materials for VoxelGI.
 	emission *= scene_data.emissive_exposure_normalization;
@@ -2182,7 +2184,7 @@ void fragment_shader(in SceneData scene_data) {
 		indirect_specular_light *= specular_occlusion;
 #endif // BENT_NORMAL_MAP_USED
 #endif // SPECULAR_OCCLUSION_DISABLED
-		ambient_light *= albedo.rgb;
+		ambient_light_resulting = ambient_light * albedo.rgb;
 
 		if (bool(implementation_data.ss_effects_flags & SCREEN_SPACE_EFFECTS_FLAGS_USE_SSIL)) {
 #ifdef USE_MULTIVIEW
@@ -2190,8 +2192,8 @@ void fragment_shader(in SceneData scene_data) {
 #else
 			vec4 ssil = textureLod(sampler2D(ssil_buffer, SAMPLER_LINEAR_CLAMP), screen_uv, 0.0);
 #endif // USE_MULTIVIEW
-			ambient_light *= 1.0 - ssil.a;
-			ambient_light += ssil.rgb * albedo.rgb;
+			ambient_light_resulting *= 1.0 - ssil.a;
+			ambient_light_resulting += ssil.rgb * albedo.rgb;
 		}
 
 		//process ssr
@@ -2882,7 +2884,7 @@ void fragment_shader(in SceneData scene_data) {
 
 #ifdef USE_SHADOW_TO_OPACITY
 #ifndef MODE_RENDER_DEPTH
-	alpha = min(alpha, clamp(length(ambient_light), 0.0, 1.0));
+	alpha = min(alpha, clamp(length(ambient_light_resulting), 0.0, 1.0));
 
 #if defined(ALPHA_SCISSOR_USED)
 #ifdef MODE_RENDER_MATERIAL
@@ -3059,7 +3061,7 @@ void fragment_shader(in SceneData scene_data) {
 
 	// apply metallic
 	diffuse_light *= 1.0 - metallic;
-	ambient_light *= 1.0 - metallic;
+	ambient_light_resulting *= 1.0 - metallic;
 
 #ifdef MODE_SEPARATE_SPECULAR
 
@@ -3072,7 +3074,7 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef SSS_MODE_SKIN
 	sss_strength = -sss_strength;
 #endif
-	diffuse_buffer = vec4(emission + diffuse_light + ambient_light, sss_strength);
+	diffuse_buffer = vec4(emission + diffuse_light + ambient_light_resulting, sss_strength);
 	specular_buffer = vec4(direct_specular_light + indirect_specular_light, metallic);
 #endif
 
@@ -3088,7 +3090,7 @@ void fragment_shader(in SceneData scene_data) {
 #ifdef MODE_UNSHADED
 	frag_color = vec4(albedo, alpha);
 #else
-	frag_color = vec4(emission + ambient_light + diffuse_light + direct_specular_light + indirect_specular_light, alpha);
+	frag_color = vec4(emission + ambient_light_resulting + diffuse_light + direct_specular_light + indirect_specular_light, alpha);
 //frag_color = vec4(1.0);
 #endif //USE_NO_SHADING
 
