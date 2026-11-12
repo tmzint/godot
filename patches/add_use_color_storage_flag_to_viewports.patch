@@ -1,0 +1,306 @@
+Subject: [PATCH] add use_color_storage flag to viewports
+---
+Index: doc/classes/Viewport.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/doc/classes/Viewport.xml b/doc/classes/Viewport.xml
+--- a/doc/classes/Viewport.xml	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/doc/classes/Viewport.xml	(date 1794489373986)
+@@ -467,6 +467,9 @@
+ 			[member use_debanding] has no effect when using the Compatibility rendering method. The Mobile renderer can also use material debanding, which can be set with [method RenderingServer.material_set_use_debanding] or configured with [member ProjectSettings.rendering/anti_aliasing/quality/use_debanding].
+ 			See also [member ProjectSettings.rendering/anti_aliasing/quality/use_debanding], [method RenderingServer.material_set_use_debanding], and [method RenderingServer.viewport_set_use_debanding].
+ 		</member>
++		<member name="use_color_storage" type="bool" setter="set_use_color_storage" getter="is_using_color_storage" default="false">
++			When using the Mobile or Forward+ renderers, set [member use_color_storage] to enable or disable the use_storage feature of this [Viewport], allowing the color buffer to be used in compute shaders.
++		</member>
+ 		<member name="use_hdr_2d" type="bool" setter="set_use_hdr_2d" getter="is_using_hdr_2d" default="false">
+ 			If [code]true[/code], 2D rendering will use a high dynamic range (HDR) [code]RGBA16[/code] format framebuffer. Additionally, 2D rendering will be performed on linear values and will be converted using the appropriate transfer function immediately before blitting to the screen (if the Viewport is attached to the screen).
+ 			Practically speaking, this means that the end result of the Viewport will not be clamped to the [code]0-1[/code] range and can be used in 3D rendering without color encoding adjustments. This allows 2D rendering to take advantage of effects requiring high dynamic range (e.g. 2D glow) as well as substantially improves the appearance of effects requiring highly detailed gradients.
+Index: servers/rendering/rendering_server.cpp
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/rendering_server.cpp b/servers/rendering/rendering_server.cpp
+--- a/servers/rendering/rendering_server.cpp	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/rendering_server.cpp	(date 1794489090383)
+@@ -2899,6 +2899,7 @@
+ 	ClassDB::bind_method(D_METHOD("viewport_set_screen_space_aa", "viewport", "mode"), &RenderingServer::viewport_set_screen_space_aa);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_use_taa", "viewport", "enable"), &RenderingServer::viewport_set_use_taa);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_use_debanding", "viewport", "enable"), &RenderingServer::viewport_set_use_debanding);
++	ClassDB::bind_method(D_METHOD("viewport_set_use_color_storage", "viewport", "enable"), &RenderingServer::viewport_set_use_color_storage);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_use_occlusion_culling", "viewport", "enable"), &RenderingServer::viewport_set_use_occlusion_culling);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_occlusion_rays_per_thread", "rays_per_thread"), &RenderingServer::viewport_set_occlusion_rays_per_thread);
+ 	ClassDB::bind_method(D_METHOD("viewport_set_occlusion_culling_build_quality", "quality"), &RenderingServer::viewport_set_occlusion_culling_build_quality);
+Index: servers/rendering/rendering_server_default.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/rendering_server_default.h b/servers/rendering/rendering_server_default.h
+--- a/servers/rendering/rendering_server_default.h	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/rendering_server_default.h	(date 1794489109029)
+@@ -791,6 +791,7 @@
+ 	FUNC2(viewport_set_screen_space_aa, RID, RSE::ViewportScreenSpaceAA)
+ 	FUNC2(viewport_set_use_taa, RID, bool)
+ 	FUNC2(viewport_set_use_debanding, RID, bool)
++	FUNC2(viewport_set_use_color_storage, RID, bool)
+ 	FUNC2(viewport_set_force_motion_vectors, RID, bool)
+ 	FUNC2(viewport_set_use_occlusion_culling, RID, bool)
+ 	FUNC1(viewport_set_occlusion_rays_per_thread, int)
+Index: servers/rendering/renderer_viewport.cpp
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/renderer_viewport.cpp b/servers/rendering/renderer_viewport.cpp
+--- a/servers/rendering/renderer_viewport.cpp	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/renderer_viewport.cpp	(date 1794489037308)
+@@ -296,6 +296,7 @@
+ 			rb_config.set_anisotropic_filtering_level(p_viewport->anisotropic_filtering_level);
+ 			rb_config.set_use_taa(use_taa);
+ 			rb_config.set_use_debanding(p_viewport->use_debanding);
++			rb_config.set_force_color_storage(p_viewport->use_color_storage);
+ 
+ 			p_viewport->render_buffers->configure(&rb_config);
+ 		}
+@@ -1496,6 +1497,17 @@
+ 	RSG::texture_storage->render_target_set_use_debanding(viewport->render_target, p_use_debanding);
+ 	_configure_3d_render_buffers(viewport);
+ }
++
++void RendererViewport::viewport_set_use_color_storage(RID p_viewport, bool p_enable) {
++	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
++	ERR_FAIL_NULL(viewport);
++
++	if (viewport->use_color_storage == p_enable) {
++		return;
++	}
++	viewport->use_color_storage = p_enable;
++	_configure_3d_render_buffers(viewport);
++}
+ 
+ void RendererViewport::viewport_set_force_motion_vectors(RID p_viewport, bool p_force_motion_vectors) {
+ 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+Index: servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h b/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h
+--- a/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.h	(date 1794488874989)
+@@ -68,6 +68,7 @@
+ 
+ private:
+ 	bool can_be_storage = true;
++	bool force_color_storage = false;
+ 	bool force_hdr = false;
+ 	uint32_t max_cluster_elements = 512;
+ 	RD::DataFormat preferred_data_format = RD::DATA_FORMAT_MAX;
+@@ -245,6 +246,7 @@
+ 	_FORCE_INLINE_ RSE::ViewportScreenSpaceAA get_screen_space_aa() const { return screen_space_aa; }
+ 	_FORCE_INLINE_ bool get_use_taa() const { return use_taa; }
+ 	_FORCE_INLINE_ bool get_use_debanding() const { return use_debanding; }
++	_FORCE_INLINE_ bool get_force_color_storage() const { return force_color_storage; }
+ 
+ 	uint64_t get_auto_exposure_version() const { return auto_exposure_version; }
+ 	void set_auto_exposure_version(const uint64_t p_auto_exposure_version) { auto_exposure_version = p_auto_exposure_version; }
+Index: servers/rendering/rendering_server.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/rendering_server.h b/servers/rendering/rendering_server.h
+--- a/servers/rendering/rendering_server.h	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/rendering_server.h	(date 1794489062257)
+@@ -597,6 +597,7 @@
+ 	virtual void viewport_set_use_taa(RID p_viewport, bool p_use_taa) = 0;
+ 
+ 	virtual void viewport_set_use_debanding(RID p_viewport, bool p_use_debanding) = 0;
++	virtual void viewport_set_use_color_storage(RID p_viewport, bool p_enable) = 0;
+ 
+ 	virtual void viewport_set_force_motion_vectors(RID p_viewport, bool p_force_motion_vectors) = 0;
+ 
+Index: servers/rendering/storage/render_scene_buffers.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/storage/render_scene_buffers.h b/servers/rendering/storage/render_scene_buffers.h
+--- a/servers/rendering/storage/render_scene_buffers.h	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/storage/render_scene_buffers.h	(date 1794488770299)
+@@ -52,6 +52,7 @@
+ 	float texture_mipmap_bias = 0.0;
+ 	bool use_taa = false;
+ 	bool use_debanding = false;
++	bool force_color_storage = false;
+ 
+ protected:
+ 	static void _bind_methods();
+@@ -93,6 +94,9 @@
+ 	bool get_use_debanding() const { return use_debanding; }
+ 	void set_use_debanding(bool p_use_debanding) { use_debanding = p_use_debanding; }
+ 
++	bool get_force_color_storage() const { return force_color_storage; }
++	void set_force_color_storage(bool p_enable) { force_color_storage = p_enable; }
++
+ 	RenderSceneBuffersConfiguration() {}
+ 	virtual ~RenderSceneBuffersConfiguration() {}
+ };
+Index: servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.cpp
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.cpp b/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.cpp
+--- a/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.cpp	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/renderer_rd/storage_rd/render_scene_buffers_rd.cpp	(date 1794488935551)
+@@ -171,6 +171,7 @@
+ 	anisotropic_filtering_level = p_config->get_anisotropic_filtering_level();
+ 	use_taa = p_config->get_use_taa();
+ 	use_debanding = p_config->get_use_debanding();
++	force_color_storage = p_config->get_force_color_storage();
+ 
+ 	ERR_FAIL_COND_MSG(view_count == 0, "Must have at least 1 view");
+ 
+@@ -183,7 +184,18 @@
+ 
+ 	// Create our color buffer.
+ 	const bool resolve_target = msaa_3d != RSE::VIEWPORT_MSAA_DISABLED;
+-	create_texture(RB_SCOPE_BUFFERS, RB_TEX_COLOR, get_base_data_format(), get_color_usage_bits(resolve_target, false, can_be_storage));
++	bool color_storage = can_be_storage;
++    if (force_color_storage && !can_be_storage) {
++    	// Only the single-sample (or MSAA resolve) color texture gets the storage bit.
++    	// The MSAA texture itself can't be a storage image, and depth/blur/etc. stay as they are.
++    	const uint32_t storage_bits = get_color_usage_bits(resolve_target, false, true);
++    	if (RD::get_singleton()->texture_is_format_supported_for_usage(get_base_data_format(), storage_bits)) {
++    		color_storage = true;
++    	} else {
++    		WARN_PRINT_ONCE("Forcing color storage on this viewport is not supported for the current render buffer format. Enable 'use_hdr_2d' on the viewport.");
++    	}
++    }
++    create_texture(RB_SCOPE_BUFFERS, RB_TEX_COLOR, get_base_data_format(), get_color_usage_bits(resolve_target, false, color_storage));
+ 
+ 	// TODO: Detect when it is safe to use RD::TEXTURE_USAGE_TRANSIENT_BIT for RB_TEX_DEPTH, RB_TEX_COLOR_MSAA and/or RB_TEX_DEPTH_MSAA.
+ 	// (it means we cannot sample from it, we cannot copy from/to it) to save VRAM (and maybe performance too).
+Index: scene/main/viewport.cpp
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/scene/main/viewport.cpp b/scene/main/viewport.cpp
+--- a/scene/main/viewport.cpp	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/scene/main/viewport.cpp	(date 1794489220361)
+@@ -3886,6 +3886,18 @@
+ 	return use_debanding;
+ }
+ 
++void Viewport::set_use_color_storage(bool p_enable) {
++	if (use_color_storage == p_enable) {
++		return;
++	}
++	use_color_storage = p_enable;
++	RS::get_singleton()->viewport_set_use_color_storage(viewport, p_enable);
++}
++
++bool Viewport::is_using_color_storage() const {
++	return use_color_storage;
++}
++
+ void Viewport::set_mesh_lod_threshold(float p_pixels) {
+ 	ERR_MAIN_THREAD_GUARD;
+ 	mesh_lod_threshold = p_pixels;
+@@ -5195,6 +5207,9 @@
+ 	ClassDB::bind_method(D_METHOD("set_use_debanding", "enable"), &Viewport::set_use_debanding);
+ 	ClassDB::bind_method(D_METHOD("is_using_debanding"), &Viewport::is_using_debanding);
+ 
++	ClassDB::bind_method(D_METHOD("set_use_color_storage", "enable"), &Viewport::set_use_color_storage);
++    ClassDB::bind_method(D_METHOD("is_using_color_storage"), &Viewport::is_using_color_storage);
++
+ 	ClassDB::bind_method(D_METHOD("set_use_occlusion_culling", "enable"), &Viewport::set_use_occlusion_culling);
+ 	ClassDB::bind_method(D_METHOD("is_using_occlusion_culling"), &Viewport::is_using_occlusion_culling);
+ 
+@@ -5375,6 +5390,7 @@
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "screen_space_aa", PROPERTY_HINT_ENUM, "Disabled (Fastest),FXAA (Fast),SMAA (Average)"), "set_screen_space_aa", "get_screen_space_aa");
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_taa"), "set_use_taa", "is_using_taa");
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_debanding"), "set_use_debanding", "is_using_debanding");
++	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_color_storage"), "set_use_color_storage", "is_using_color_storage");
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_occlusion_culling"), "set_use_occlusion_culling", "is_using_occlusion_culling");
+ 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mesh_lod_threshold", PROPERTY_HINT_RANGE, "0,1024,0.1"), "set_mesh_lod_threshold", "get_mesh_lod_threshold");
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_draw", PROPERTY_HINT_ENUM, "Disabled,Unshaded,Lighting,Overdraw,Wireframe,Normal Buffer,VoxelGI Albedo,VoxelGI Lighting,VoxelGI Emission,Shadow Atlas,Directional Shadow Map,Scene Luminance,SSAO,SSIL,Directional Shadow Splits,Decal Atlas,SDFGI Cascades,SDFGI Probes,VoxelGI/SDFGI Buffer,Disable Mesh LOD,OmniLight3D Cluster,SpotLight3D Cluster,Decal Cluster,ReflectionProbe Cluster,Occlusion Culling Buffer,Motion Vectors,Internal Buffer,AreaLight3D Cluster,AreaLight3D Atlas"), "set_debug_draw", "get_debug_draw");
+Index: scene/main/viewport.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/scene/main/viewport.h b/scene/main/viewport.h
+--- a/scene/main/viewport.h	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/scene/main/viewport.h	(date 1794489142697)
+@@ -327,6 +327,7 @@
+ 	float texture_mipmap_bias = 0.0f;
+ 	AnisotropicFiltering anisotropic_filtering_level = ANISOTROPY_4X;
+ 	bool use_debanding = false;
++	bool use_color_storage = false;
+ 	float mesh_lod_threshold = 1.0;
+ 	bool use_occlusion_culling = false;
+ 
+@@ -623,6 +624,9 @@
+ 	void set_use_debanding(bool p_use_debanding);
+ 	bool is_using_debanding() const;
+ 
++	void set_use_color_storage(bool p_enable);
++    bool is_using_color_storage() const;
++
+ 	void set_mesh_lod_threshold(float p_pixels);
+ 	float get_mesh_lod_threshold() const;
+ 
+Index: doc/classes/RenderingServer.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/doc/classes/RenderingServer.xml b/doc/classes/RenderingServer.xml
+--- a/doc/classes/RenderingServer.xml	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/doc/classes/RenderingServer.xml	(date 1794489433649)
+@@ -4458,6 +4458,14 @@
+ 				Equivalent to [member Viewport.use_debanding]. See also [member ProjectSettings.rendering/anti_aliasing/quality/use_debanding].
+ 			</description>
+ 		</method>
++		<method name="viewport_set_use_color_storage">
++			<return type="void" />
++			<param index="0" name="viewport" type="RID" />
++			<param index="1" name="enable" type="bool" />
++			<description>
++				Equivalent to [member Viewport.use_color_storage].
++			</description>
++		</method>
+ 		<method name="viewport_set_use_hdr_2d">
+ 			<return type="void" />
+ 			<param index="0" name="viewport" type="RID" />
+Index: servers/rendering/renderer_viewport.h
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/servers/rendering/renderer_viewport.h b/servers/rendering/renderer_viewport.h
+--- a/servers/rendering/renderer_viewport.h	(revision 6cbd97cac9bcfad98da00a6aa4c6e8bf5e99f7c7)
++++ b/servers/rendering/renderer_viewport.h	(date 1794488981800)
+@@ -72,6 +72,7 @@
+ 		RSE::ViewportScreenSpaceAA screen_space_aa = RSE::VIEWPORT_SCREEN_SPACE_AA_DISABLED;
+ 		bool use_taa = false;
+ 		bool use_debanding = false;
++		bool use_color_storage = false;
+ 		bool force_motion_vectors = false;
+ 
+ 		RendererSceneRender::CameraData prev_camera_data;
+@@ -284,6 +285,7 @@
+ 	void viewport_set_screen_space_aa(RID p_viewport, RSE::ViewportScreenSpaceAA p_mode);
+ 	void viewport_set_use_taa(RID p_viewport, bool p_use_taa);
+ 	void viewport_set_use_debanding(RID p_viewport, bool p_use_debanding);
++	void viewport_set_use_color_storage(RID p_viewport, bool p_enable);
+ 	void viewport_set_force_motion_vectors(RID p_viewport, bool p_force_motion_vectors);
+ 	void viewport_set_use_occlusion_culling(RID p_viewport, bool p_use_occlusion_culling);
+ 	void viewport_set_occlusion_rays_per_thread(int p_rays_per_thread);
