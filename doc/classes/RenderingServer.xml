@@ -4458,6 +4458,14 @@
 				Equivalent to [member Viewport.use_debanding]. See also [member ProjectSettings.rendering/anti_aliasing/quality/use_debanding].
 			</description>
 		</method>
+		<method name="viewport_set_use_color_storage">
+			<return type="void" />
+			<param index="0" name="viewport" type="RID" />
+			<param index="1" name="enable" type="bool" />
+			<description>
+				Equivalent to [member Viewport.use_color_storage].
+			</description>
+		</method>
 		<method name="viewport_set_use_hdr_2d">
 			<return type="void" />
 			<param index="0" name="viewport" type="RID" />

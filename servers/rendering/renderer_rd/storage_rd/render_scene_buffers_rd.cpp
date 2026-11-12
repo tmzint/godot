@@ -171,6 +171,7 @@ void RenderSceneBuffersRD::configure(const RenderSceneBuffersConfiguration *p_co
 	anisotropic_filtering_level = p_config->get_anisotropic_filtering_level();
 	use_taa = p_config->get_use_taa();
 	use_debanding = p_config->get_use_debanding();
+	force_color_storage = p_config->get_force_color_storage();
 
 	ERR_FAIL_COND_MSG(view_count == 0, "Must have at least 1 view");
 
@@ -183,7 +184,18 @@ void RenderSceneBuffersRD::configure(const RenderSceneBuffersConfiguration *p_co
 
 	// Create our color buffer.
 	const bool resolve_target = msaa_3d != RSE::VIEWPORT_MSAA_DISABLED;
-	create_texture(RB_SCOPE_BUFFERS, RB_TEX_COLOR, get_base_data_format(), get_color_usage_bits(resolve_target, false, can_be_storage));
+	bool color_storage = can_be_storage;
+    if (force_color_storage && !can_be_storage) {
+    	// Only the single-sample (or MSAA resolve) color texture gets the storage bit.
+    	// The MSAA texture itself can't be a storage image, and depth/blur/etc. stay as they are.
+    	const uint32_t storage_bits = get_color_usage_bits(resolve_target, false, true);
+    	if (RD::get_singleton()->texture_is_format_supported_for_usage(get_base_data_format(), storage_bits)) {
+    		color_storage = true;
+    	} else {
+    		WARN_PRINT_ONCE("Forcing color storage on this viewport is not supported for the current render buffer format. Enable 'use_hdr_2d' on the viewport.");
+    	}
+    }
+    create_texture(RB_SCOPE_BUFFERS, RB_TEX_COLOR, get_base_data_format(), get_color_usage_bits(resolve_target, false, color_storage));
 
 	// TODO: Detect when it is safe to use RD::TEXTURE_USAGE_TRANSIENT_BIT for RB_TEX_DEPTH, RB_TEX_COLOR_MSAA and/or RB_TEX_DEPTH_MSAA.
 	// (it means we cannot sample from it, we cannot copy from/to it) to save VRAM (and maybe performance too).

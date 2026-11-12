@@ -52,6 +52,7 @@ private:
 	float texture_mipmap_bias = 0.0;
 	bool use_taa = false;
 	bool use_debanding = false;
+	bool force_color_storage = false;
 
 protected:
 	static void _bind_methods();
@@ -92,6 +93,9 @@ public:
 
 	bool get_use_debanding() const { return use_debanding; }
 	void set_use_debanding(bool p_use_debanding) { use_debanding = p_use_debanding; }
+
+	bool get_force_color_storage() const { return force_color_storage; }
+	void set_force_color_storage(bool p_enable) { force_color_storage = p_enable; }
 
 	RenderSceneBuffersConfiguration() {}
 	virtual ~RenderSceneBuffersConfiguration() {}

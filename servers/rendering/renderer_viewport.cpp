@@ -296,6 +296,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 			rb_config.set_anisotropic_filtering_level(p_viewport->anisotropic_filtering_level);
 			rb_config.set_use_taa(use_taa);
 			rb_config.set_use_debanding(p_viewport->use_debanding);
+			rb_config.set_force_color_storage(p_viewport->use_color_storage);
 
 			p_viewport->render_buffers->configure(&rb_config);
 		}
@@ -1494,6 +1495,17 @@ void RendererViewport::viewport_set_use_debanding(RID p_viewport, bool p_use_deb
 	}
 	viewport->use_debanding = p_use_debanding;
 	RSG::texture_storage->render_target_set_use_debanding(viewport->render_target, p_use_debanding);
+	_configure_3d_render_buffers(viewport);
+}
+
+void RendererViewport::viewport_set_use_color_storage(RID p_viewport, bool p_enable) {
+	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
+	ERR_FAIL_NULL(viewport);
+
+	if (viewport->use_color_storage == p_enable) {
+		return;
+	}
+	viewport->use_color_storage = p_enable;
 	_configure_3d_render_buffers(viewport);
 }
 

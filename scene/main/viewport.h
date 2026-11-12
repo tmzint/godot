@@ -327,6 +327,7 @@ private:
 	float texture_mipmap_bias = 0.0f;
 	AnisotropicFiltering anisotropic_filtering_level = ANISOTROPY_4X;
 	bool use_debanding = false;
+	bool use_color_storage = false;
 	float mesh_lod_threshold = 1.0;
 	bool use_occlusion_culling = false;
 
@@ -622,6 +623,9 @@ public:
 
 	void set_use_debanding(bool p_use_debanding);
 	bool is_using_debanding() const;
+
+	void set_use_color_storage(bool p_enable);
+    bool is_using_color_storage() const;
 
 	void set_mesh_lod_threshold(float p_pixels);
 	float get_mesh_lod_threshold() const;
